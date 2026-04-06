@@ -1,5 +1,5 @@
 name: Deploy to EC2
-# Use reusable workflow to deploy to EC2 instance. This workflow is triggered on push to main branch.
+# Use reusable workflow to deploy to EC2 instance.This workflow is triggered on push to main branch.
 on:
   push:
     branches: [main]
