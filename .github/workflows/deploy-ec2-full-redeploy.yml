@@ -45,14 +45,14 @@ jobs:
             mkdir -p "${{ inputs.ec2_deploy_path }}"
 
       - name: Copy project files to EC2
-        uses: appleboy/scp-action@v0.1.7
+        uses: appleboy/rsync-action@master
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
           source: "."
           target: "${{ inputs.ec2_deploy_path }}"
-          overwrite: true
+          exclude: ".git/"
 
       - name: Deploy with Docker Compose on EC2
         uses: appleboy/ssh-action@v1.0.3
