@@ -55,6 +55,7 @@ jobs:
           key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
           source: "deploy.tar.gz"
           target: "${{ inputs.ec2_deploy_path }}/"
+          overwrite: true
 
       - name: Extract deployment archive on EC2
         uses: appleboy/ssh-action@v1.0.3
