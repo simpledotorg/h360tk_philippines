@@ -30,13 +30,13 @@ services:
     image: simpledotorg/heart360tk-fileprocessor:${HEART360TK_VERSION}
     container_name: file-upload-trigger
     environment:
-      - H360TK_DATA_LOAD_SCRIPT=/scripts/ingest_file_puskesmas.py
+      - H360TK_DATA_LOAD_SCRIPT=/scripts/ingest_file_philippines.py
       - POSTGRES_HOST=${POSTGRES_HOST}
       - POSTGRES_USER=heart360tk
       - POSTGRES_PASSWORD=YmE4ZTk0OGI0OTNmNGU5YmFjZDY1YTA0
       - POSTGRES_DB=${POSTGRES_DB}
     volumes:
-      - ./ingest_file_puskesmas.py:/scripts/ingest_file_puskesmas.py
+      - ./ingest_file_philippines.py:/scripts/ingest_file_philippines.py
       - .upload:/data:rw
 
 ###
