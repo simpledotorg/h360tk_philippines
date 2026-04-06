@@ -1,0 +1,67 @@
+name: Full Redeploy EC2
+
+on:
+  workflow_dispatch:
+    inputs:
+      ec2_deploy_path:
+        description: 'Path on EC2 to deploy to'
+        required: true
+        type: string
+        default: '~/h360tk_philippines'
+
+jobs:
+  redeploy:
+    environment: production
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stop and remove all containers on EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          script: |
+            docker compose down --volumes --remove-orphans || true
+            docker rm -f $(docker ps -aq) || true
+
+      - name: Delete all data and directory on EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          script: |
+            sudo rm -rf "${{ inputs.ec2_deploy_path }}"
+
+      - name: Prepare deploy directory on EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          script: |
+            mkdir -p "${{ inputs.ec2_deploy_path }}"
+
+      - name: Copy project files to EC2
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          source: "."
+          target: "${{ inputs.ec2_deploy_path }}"
+          overwrite: true
+
+      - name: Deploy with Docker Compose on EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          script: |
+            cd "${{ inputs.ec2_deploy_path }}"
+            docker compose pull
+            docker compose up -d --remove-orphans
+            docker image prune -f
