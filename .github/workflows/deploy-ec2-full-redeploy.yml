@@ -7,7 +7,7 @@ on:
         description: 'Path on EC2 to deploy to'
         required: true
         type: string
-        default: '~/h360tk_philippines'
+        default: '/home/ec2-user/h360tk_philippines'
 
 jobs:
   redeploy:
