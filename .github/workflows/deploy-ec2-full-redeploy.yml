@@ -17,14 +17,11 @@ on:
 jobs:
   call_full_redeploy:
     environment: production
-    runs-on: ubuntu-latest
-    steps:
-      - name: Call reusable full redeploy workflow
-        uses: simpledotorg/poc_heart360_on_grafana/.github/workflows/deploy-ec2-full-redeploy-reusable.yml
-        with:
-          ec2_deploy_path: ${{ inputs.ec2_deploy_path }}
-          deploy_ref: ${{ inputs.deploy_ref }}
-        secrets:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_USER: ${{ secrets.EC2_USER }}
-          EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+    uses: simpledotorg/poc_heart360_on_grafana/.github/workflows/deploy-ec2-full-redeploy-reusable.yml@main
+    with:
+      ec2_deploy_path: ${{ inputs.ec2_deploy_path }}
+      deploy_ref: ${{ inputs.deploy_ref }}
+    secrets:
+      EC2_HOST: ${{ secrets.EC2_HOST }}
+      EC2_USER: ${{ secrets.EC2_USER }}
+      EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
