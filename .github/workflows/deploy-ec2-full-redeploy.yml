@@ -45,7 +45,7 @@ jobs:
             mkdir -p "${{ inputs.ec2_deploy_path }}"
 
       - name: Create deployment archive
-        run: git archive --format=tar -o deploy.tar.gz HEAD
+        run: git archive --format=tar.gz -o deploy.tar.gz HEAD
 
       - name: Copy deployment archive to EC2
         uses: appleboy/scp-action@v0.1.7
