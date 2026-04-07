@@ -8,20 +8,74 @@ on:
         required: true
         type: string
         default: '/home/ec2-user/h360tk_philippines'
-      deploy_ref:
-        description: 'Git ref to deploy from'
-        required: false
-        type: string
-        default: 'refs/heads/main'
 
 jobs:
-  call_full_redeploy:
+  redeploy:
     environment: production
-    uses: simpledotorg/poc_heart360_on_grafana/.github/workflows/deploy-ec2-full-redeploy-reusable.yml@main
-    with:
-      ec2_deploy_path: ${{ inputs.ec2_deploy_path }}
-      deploy_ref: ${{ inputs.deploy_ref }}
-    secrets:
-      EC2_HOST: ${{ secrets.EC2_HOST }}
-      EC2_USER: ${{ secrets.EC2_USER }}
-      EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stop and remove all containers on EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          script: |
+            docker compose down --volumes --remove-orphans || true
+            docker rm -f $(docker ps -aq) || true
+
+      - name: Delete all data and directory on EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          script: |
+            sudo rm -rf "${{ inputs.ec2_deploy_path }}"
+
+      - name: Prepare deploy directory on EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          script: |
+            mkdir -p "${{ inputs.ec2_deploy_path }}"
+
+      - name: Create deployment archive
+        run: git archive --format=tar -o deploy.tar.gz HEAD
+
+      - name: Copy deployment archive to EC2
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          source: "deploy.tar.gz"
+          target: "${{ inputs.ec2_deploy_path }}/"
+          overwrite: true
+
+      - name: Extract deployment archive on EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          script: |
+            cd "${{ inputs.ec2_deploy_path }}"
+            tar -xzf deploy.tar.gz
+            rm deploy.tar.gz
+
+      - name: Deploy with Docker Compose on EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          script: |
+            cd "${{ inputs.ec2_deploy_path }}"
+            docker compose pull
+            docker compose up -d --remove-orphans
+            docker image prune -f
