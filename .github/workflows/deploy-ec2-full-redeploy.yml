@@ -82,3 +82,4 @@ jobs:
             docker compose up -d --remove-orphans
             sudo chown -R 1000:1000 .upload/
             docker image prune -f
+            
