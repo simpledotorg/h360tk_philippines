@@ -76,6 +76,9 @@ jobs:
           key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
           script: |
             cd "${{ inputs.ec2_deploy_path }}"
+            mkdir -p .upload
+            sudo chown -R 1000:1000 .upload/
             docker compose pull
             docker compose up -d --remove-orphans
+            sudo chown -R 1000:1000 .upload/
             docker image prune -f
