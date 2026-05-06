@@ -14,6 +14,13 @@ jobs:
     environment: production
     runs-on: ubuntu-latest
     steps:
+      - name: Check user permissions
+        run: |
+          allowed_users=("your-username" "another-username")
+          if [[ ! " ${allowed_users[@]} " =~ " ${GITHUB_ACTOR} " ]]; then
+            echo "User ${GITHUB_ACTOR} is not authorized to run this workflow"
+            exit 1
+          fi
       - uses: actions/checkout@v4
 
       - name: Stop and remove all containers on EC2
@@ -76,6 +83,9 @@ jobs:
           key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
           script: |
             cd "${{ inputs.ec2_deploy_path }}"
+            mkdir -p .upload
+            sudo chown -R 1000:1000 .upload/
             docker compose pull
             docker compose up -d --remove-orphans
+            sudo chown -R 1000:1000 .upload/
             docker image prune -f
