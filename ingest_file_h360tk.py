@@ -10,10 +10,13 @@ from psycopg2 import errorcodes
 
 HEADER_ROW = 1
 COL_INDIVIDUAL_ID = 'Patient ID'
-COL_PATIENT_NAME = 'Patient Name'
+COL_FIRST_NAME = 'First Name'
+COL_MIDDLE_NAME = 'Middle Name'
+COL_LAST_NAME = 'Last Name'
 COL_SEX = 'Gender'
 COL_MOBILE = 'Phone Number'
 COL_DATE_OF_BIRTH = 'Date of Birth'
+COL_AGE = 'Age'
 
 # Facility hierarchy columns
 COL_REGION = 'Region'
@@ -23,7 +26,7 @@ COL_SHC = 'Sub Facility'
 
 # Registration date column
 COL_REGISTRATION_DATE = 'Registration Date'
-COL_LAST_VISIT_TIME = 'Last Visit Time'
+COL_VISIT_TIME = 'Visit Time'
 
 # HTN columns
 COL_SYSTOLIC = 'Systolic'
@@ -32,6 +35,10 @@ COL_DIASTOLIC = 'Diastolic'
 # DM columns
 COL_BS_TYPE = 'Blood Sugar Type'
 COL_BS_VALUE = 'Blood Sugar Value'
+
+# Diagnosis columns
+COL_DIAGNOSIS_1 = 'Diagnosis 1'
+COL_DIAGNOSIS_2 = 'Diagnosis 2'
 
 
 CSV_DATE_FORMATS = ["%Y-%m-%d", "%d-%m-%Y", "%d/%m/%y", "%d-%m-%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S", "%d/%m/%y %H:%M:%S"]
@@ -64,7 +71,15 @@ HIERARCHY_LEVELS = [
     {'level': 4, 'column': [COL_SHC], 'display_name': 'Sub-Facility', 'var_name': 'sub_facility', 'default': None},
 ]
 
-DEFAULT_SUGAR_TYPE = 'random'
+# --- ALLOWED BLOOD SUGAR TYPES ---
+# Only these types are accepted during ingestion. Any other value
+# causes the blood sugar record to be discarded.
+ALLOWED_SUGAR_TYPES = {'RBS', 'FBS', 'PPBS', 'HBA1C'}
+DEFAULT_SUGAR_TYPE = 'RBS'
+
+# --- ALLOWED DIAGNOSIS CODES ---
+# Only these codes are accepted. Any other value is silently ignored.
+ALLOWED_DIAGNOSIS_CODES = {'I10', 'E11'}
 
 # --- HELPER FUNCTIONS ---
 
@@ -72,7 +87,7 @@ def uuid_to_int_hash(uuid_str):
     if pd.isna(uuid_str) or not uuid_str:
         return None
     digest = hashlib.sha256(str(uuid_str).strip().encode('utf-8')).hexdigest()
-    return int(digest[:15], 16) % (2**63)
+    return int(digest[:15], 16) % (2**53)
 
 def parse_date(date_str):
     if pd.isna(date_str) or date_str is None or str(date_str).strip() == '':
@@ -92,6 +107,35 @@ def safe_str(value):
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return None
     return str(value)
+
+def calculate_dob_from_age(age, reference_date=None):
+    if age is None or (isinstance(age, float) and pd.isna(age)):
+        return None
+
+    try:
+        age = int(age)
+    except:
+        return None
+
+    if reference_date is None:
+        reference_date = datetime.today()
+
+    try:
+        return reference_date.replace(year=reference_date.year - age)
+    except ValueError:
+        # Handle leap year edge case (Feb 29)
+        return reference_date - timedelta(days=age * 365)
+
+def build_patient_name(row):
+    first = safe_str(row.get(COL_FIRST_NAME))
+    middle = safe_str(row.get(COL_MIDDLE_NAME))
+    last = safe_str(row.get(COL_LAST_NAME))
+
+    name_parts = [part.strip() for part in [first, middle, last] if part and part.strip()]
+    if not name_parts:
+        return None
+
+    return " ".join(name_parts)
 
 def build_hierarchy_from_row(row):
     """Build (name, level) tuples for upsert_org_unit_chain from HIERARCHY_LEVELS."""
@@ -242,6 +286,23 @@ ON CONFLICT (encounter_id) DO UPDATE SET
 """
     cur.execute(sql)
 
+def execute_insert_diagnosis(cur, patient_id_sql, diagnosis_code):
+    """Insert a diagnosis for a patient. Only allows codes in ALLOWED_DIAGNOSIS_CODES."""
+    if diagnosis_code not in ALLOWED_DIAGNOSIS_CODES:
+        return
+
+    sql = f"""
+    INSERT INTO patient_diagnoses (patient_id, diagnosis_code)
+    VALUES (
+        {patient_id_sql},
+        {to_sql_literal(diagnosis_code)}
+    )
+    ON CONFLICT (patient_id, diagnosis_code)
+    DO NOTHING;
+    """
+
+    cur.execute(sql)
+
 # --- MAIN INGESTION AND EXECUTION FUNCTION ---
 
 def ingest_and_execute(file_path: str) -> None:
@@ -250,6 +311,10 @@ def ingest_and_execute(file_path: str) -> None:
     into the database using direct SQL (matching reference hierarchy pattern).
 
     Facility hierarchy: Region → District → Facility → Sub-Facility (see HIERARCHY_LEVELS).
+
+    Diagnosis tags are read from 'Diagnosis 1' and 'Diagnosis 2' columns.
+    No fallback logic is applied — if diagnosis columns are empty, no
+    diagnosis tag is created for that patient.
     """
 
     DTYPE_MAPPING = {COL_INDIVIDUAL_ID: str, COL_MOBILE: str}
@@ -257,7 +322,7 @@ def ingest_and_execute(file_path: str) -> None:
     stats = {
         'total_rows': 0,
         'unique_patients': set(),
-        'invalid_last_visit_date': 0,
+        'invalid_visit_date': 0,
         'invalid_registration_date': 0,
         'processed_records': 0
     }
@@ -300,38 +365,54 @@ def ingest_and_execute(file_path: str) -> None:
             if pd.isna(row.get(COL_INDIVIDUAL_ID)) or str(row.get(COL_INDIVIDUAL_ID)).strip() == '':
                 continue
 
-            # Get registration date from the registration date column
-            last_visit_date = parse_date(row.get(COL_LAST_VISIT_TIME))
-            if not last_visit_date:
-                stats['invalid_last_visit_date'] += 1
-                print(f"Row {idx + 2}: Skipping - last visit time not found or invalid", file=sys.stderr)
-                continue
-            
+            visit_date = parse_date(row.get(COL_VISIT_TIME))
             registration_date = parse_date(row.get(COL_REGISTRATION_DATE))
-            
+
+            if not visit_date:
+                if registration_date:
+                    visit_date = registration_date
+                else:
+                    stats['invalid_visit_date'] += 1
+                    print(f"Row {idx + 2}: Skipping - registration date and visit time not found or invalid", file=sys.stderr)
+                    continue
+
             # If registration date not found, try to use last visit time
             if not registration_date:
-                if last_visit_date:
-                    registration_date = last_visit_date
+                if visit_date:
+                    registration_date = visit_date
                 else:
                     stats['invalid_registration_date'] += 1
-                    print(f"Row {idx + 2}: Skipping - registration date and last visit time not found or invalid", file=sys.stderr)
+                    print(f"Row {idx + 2}: Skipping - registration date and visit time not found or invalid", file=sys.stderr)
                     continue
 
             systolic = row.get(COL_SYSTOLIC)
             diastolic = row.get(COL_DIASTOLIC)
 
-            sugar_type = row.get(COL_BS_TYPE)
-            if not sugar_type or pd.isna(sugar_type):
-                sugar_type = DEFAULT_SUGAR_TYPE
+            raw_sugar_type = row.get(COL_BS_TYPE)
+            sugar_type = None
             sugar_value = row.get(COL_BS_VALUE)
-            
+
+            if pd.isna(sugar_value) or sugar_value is None:
+                sugar_value = None
+                sugar_type = None
+            else:
+                if not raw_sugar_type or pd.isna(raw_sugar_type):
+                    sugar_type = DEFAULT_SUGAR_TYPE
+                else:
+                    sugar_type = str(raw_sugar_type).strip().upper()
+                    if sugar_type not in ALLOWED_SUGAR_TYPES:
+                        # Invalid BS type: discard entire BS record
+                        sugar_type = None
+                        sugar_value = None
+                        print(
+                            f"Row {idx + 2}: Invalid blood sugar type '{raw_sugar_type}' — BS record discarded",
+                            file=sys.stderr
+                        )
+
             patient_id = uuid_to_int_hash(row.get(COL_INDIVIDUAL_ID))
             # Build patient fields
-            
-            patient_name = str(row.get(COL_PATIENT_NAME, '')).strip() if not pd.isna(row.get(COL_PATIENT_NAME)) else ''
-            if not patient_name:
-                patient_name = None
+
+            patient_name = build_patient_name(row)
 
             gender = safe_str(row.get(COL_SEX)) if not pd.isna(row.get(COL_SEX)) else None
 
@@ -349,8 +430,16 @@ def ingest_and_execute(file_path: str) -> None:
 
             birth_date = parse_date(row.get(COL_DATE_OF_BIRTH))
 
+            if not birth_date:
+                age_value = row.get(COL_AGE)
+                birth_date = calculate_dob_from_age(age_value, reference_date=registration_date)
+
             phc = safe_str(row.get(COL_PHC)) or 'UNKNOWN'
             hierarchy = build_hierarchy_from_row(row)
+
+            # Determine if we have BP and/or BS data
+            has_bp = not pd.isna(systolic) if systolic is not None else False
+            has_bs = sugar_value is not None
 
             # Log the record
             log_record = {
@@ -358,11 +447,11 @@ def ingest_and_execute(file_path: str) -> None:
                 'patient_name': patient_name,
                 'facility': phc,
                 'registration_date': registration_date.strftime(DATE_FORMAT_OUT) if registration_date else None,
-                'encounter_datetime': last_visit_date.strftime(DATE_FORMAT_OUT) if last_visit_date else None,
-                'systolic_bp': systolic if systolic else None,
-                'diastolic_bp': diastolic if diastolic else None,
-                'blood_sugar_type': sugar_type if sugar_type else None,
-                'blood_sugar_value': sugar_value if sugar_value else None
+                'encounter_datetime': visit_date.strftime(DATE_FORMAT_OUT) if visit_date else None,
+                'systolic_bp': systolic if has_bp else None,
+                'diastolic_bp': diastolic if has_bp else None,
+                'blood_sugar_type': sugar_type if has_bs else None,
+                'blood_sugar_value': sugar_value if has_bs else None
             }
             print(json.dumps(log_record, ensure_ascii=False, default=str))
 
@@ -379,15 +468,37 @@ def ingest_and_execute(file_path: str) -> None:
 
                 # 1. Upsert patient
                 execute_upsert_patient(cur, patient_id_sql, patient_name, gender, phone_number, registration_date, birth_date, org_unit_id)
-                stats['processed_records'] += 1
 
-                # 2. Create encounter(s) and insert clinical data
-                enc_id = execute_insert_encounter(cur, patient_id_sql, last_visit_date, org_unit_id)
-                if not pd.isna(systolic) and not pd.isna(diastolic):
+                # 2. Read diagnosis columns and insert diagnosis tags
+                #    NO fallback logic — only explicit diagnosis values are used.
+                diagnosis_1 = safe_str(row.get(COL_DIAGNOSIS_1))
+                diagnosis_2 = safe_str(row.get(COL_DIAGNOSIS_2))
+
+                diagnoses = set()
+
+                if diagnosis_1:
+                    diagnoses.add(diagnosis_1.strip().upper())
+
+                if diagnosis_2:
+                    diagnoses.add(diagnosis_2.strip().upper())
+
+                for diagnosis_code in diagnoses:
+                    execute_insert_diagnosis(
+                        cur,
+                        patient_id_sql,
+                        diagnosis_code
+                    )
+
+                # 3. Create encounter and insert clinical data
+                enc_id = execute_insert_encounter(cur, patient_id_sql, visit_date, org_unit_id)
+
+                if has_bp:
                     execute_insert_bp(cur, enc_id, systolic, diastolic)
-                
-                if not pd.isna(sugar_value) and not pd.isna(sugar_type):
+
+                if has_bs:
                     execute_insert_bs(cur, enc_id, sugar_type, sugar_value)
+
+                stats['processed_records'] += 1
 
             except psycopg2.Error as e:
                 print(f"\n--- RECORD FAILURE ---", file=sys.stderr)
@@ -395,7 +506,7 @@ def ingest_and_execute(file_path: str) -> None:
 
         print(f"\n--- EXECUTION SUMMARY ---", file=sys.stderr)
         print(f"Total rows in Excel: {stats['total_rows']}", file=sys.stderr)
-        print(f"Invalid last visit date excluded: {stats['invalid_last_visit_date']}", file=sys.stderr)
+        print(f"Invalid last visit date excluded: {stats['invalid_visit_date']}", file=sys.stderr)
         print(f"Invalid registration date excluded: {stats['invalid_registration_date']}", file=sys.stderr)
         print(f"Successfully processed records: {stats['processed_records']}", file=sys.stderr)
 
