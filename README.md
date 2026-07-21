@@ -18,6 +18,8 @@ To upload files, navigate to:
 - **Username:** `admin`
 - **Password:** `admin`
 
+**Note:** We recommend using **CSV** files for data import, as they provide faster ingestion. **Excel (.xlsx)** files are also supported but may take longer to process.
+
 ### Important Security Note
 
 ⚠️ **The credentials provided above are default credentials.** They should be changed in the `docker-compose.yml` file after cloning the repository for security purposes.
